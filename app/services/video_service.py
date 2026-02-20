@@ -542,15 +542,12 @@ async def list_latest_videos(
     page_size: int,
     db_table: Optional[AstraDBCollection] = None,
 ) -> Tuple[List[VideoSummary], int]:
-    """Return the newest *three* videos across all days for the home page row."""
-
-    # We only need a single row of 3 videos on the UI – cap the page size.
-    effective_size = min(page_size, 3)
+    """Return the newest videos across all days, sorted by submission date descending."""
 
     return await list_videos_with_query(
         {},
         page,
-        effective_size,
+        page_size,
         sort_options={"added_date": -1},
         db_table=db_table,
         source_table_name=VIDEOS_TABLE_NAME,
