@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from uuid import UUID
@@ -18,7 +19,10 @@ from app.models.rating import (
 from app.models.video import VideoID, VideoStatusEnum
 from app.models.user import User
 from app.services import video_service
+from app.services.user_activity_service import record_user_activity
 from astrapy.exceptions.data_api_exceptions import DataAPIResponseException
+
+logger = logging.getLogger(__name__)
 
 RATINGS_TABLE_NAME = video_service.VIDEO_RATINGS_TABLE_NAME  # "video_ratings_by_user"
 RATINGS_SUMMARY_TABLE_NAME = video_service.VIDEO_RATINGS_SUMMARY_TABLE_NAME
@@ -112,6 +116,16 @@ async def rate_video(
             createdAt=created_at,
             updatedAt=now,
         )
+        # Track in user_activity (never fail the rating operation)
+        try:
+            await record_user_activity(
+                userid=current_user.userid,
+                activity_type="rate",
+            )
+        except Exception:
+            logger.debug(
+                "user_activity insert failed for rate; ignoring", exc_info=True
+            )
     else:
         rating_obj = Rating(
             videoId=video_id,
@@ -127,6 +141,16 @@ async def rate_video(
             "rating_date": now,
         }
         await db_table.insert_one(document=insert_doc)
+        # Track in user_activity (never fail the rating operation)
+        try:
+            await record_user_activity(
+                userid=current_user.userid,
+                activity_type="rate",
+            )
+        except Exception:
+            logger.debug(
+                "user_activity insert failed for rate; ignoring", exc_info=True
+            )
 
     # update aggregate
     await _update_video_aggregate_rating(

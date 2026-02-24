@@ -64,6 +64,158 @@ async def test_rate_video_new(viewer_user: User):
         ratings_tbl.insert_one.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_rate_video_user_activity_failure_does_not_break(viewer_user: User):
+    """If user_activity insert fails, the rating still succeeds."""
+    video_id = uuid4()
+    req = RatingCreateOrUpdateRequest(rating=4)
+
+    ready_video = Video(
+        videoid=video_id,
+        userid=uuid4(),
+        added_date=datetime.now(timezone.utc),
+        name="Title",
+        location="http://a.b/c.mp4",
+        location_type=0,
+        status=VideoStatusEnum.READY,
+        title="Title",
+    )
+
+    with (
+        patch(
+            "app.services.rating_service.video_service.get_video_by_id",
+            new_callable=AsyncMock,
+        ) as mock_get_vid,
+        patch(
+            "app.services.rating_service.get_table", new_callable=AsyncMock
+        ) as mock_get_table,
+        patch(
+            "app.services.rating_service.record_user_activity",
+            new_callable=AsyncMock,
+            side_effect=Exception("DB error"),
+        ) as mock_record,
+    ):
+        mock_get_vid.return_value = ready_video
+        ratings_tbl = AsyncMock()
+        videos_tbl = AsyncMock()
+        mock_get_table.side_effect = [videos_tbl]
+        ratings_tbl.find_one.return_value = None
+        ratings_tbl.insert_one.return_value = {}
+        ratings_tbl.find = MagicMock(return_value=[])
+
+        result = await rating_service.rate_video(video_id, req, viewer_user, db_table=ratings_tbl)
+        assert result.rating == 4
+        ratings_tbl.insert_one.assert_called_once()
+        mock_record.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rate_video_new_calls_record_user_activity(viewer_user: User):
+    """New rating triggers record_user_activity with activity_type='rate'."""
+    video_id = uuid4()
+    req = RatingCreateOrUpdateRequest(rating=4)
+
+    ready_video = Video(
+        videoid=video_id,
+        userid=uuid4(),
+        added_date=datetime.now(timezone.utc),
+        name="Title",
+        location="http://a.b/c.mp4",
+        location_type=0,
+        status=VideoStatusEnum.READY,
+        title="Title",
+    )
+
+    with (
+        patch(
+            "app.services.rating_service.video_service.get_video_by_id",
+            new_callable=AsyncMock,
+        ) as mock_get_vid,
+        patch(
+            "app.services.rating_service.get_table", new_callable=AsyncMock
+        ) as mock_get_table,
+        patch(
+            "app.services.user_activity_service.get_table", new_callable=AsyncMock
+        ) as mock_ua_get_table,
+    ):
+        mock_get_vid.return_value = ready_video
+        ratings_tbl = AsyncMock()
+        videos_tbl = AsyncMock()
+        mock_get_table.side_effect = [ratings_tbl, videos_tbl]
+
+        ratings_tbl.find_one.return_value = None
+        ratings_tbl.insert_one.return_value = {}
+        ratings_tbl.find = MagicMock(return_value=[])
+
+        mock_ua_table = AsyncMock()
+        mock_ua_get_table.return_value = mock_ua_table
+
+        await rating_service.rate_video(video_id, req, viewer_user, db_table=ratings_tbl)
+
+        mock_ua_table.insert_one.assert_awaited_once()
+        doc = mock_ua_table.insert_one.call_args.args[0] if mock_ua_table.insert_one.call_args.args else mock_ua_table.insert_one.call_args.kwargs
+        assert doc["userid"] == str(viewer_user.userid)
+        assert doc["activity_type"] == "rate"
+
+
+@pytest.mark.asyncio
+async def test_rate_video_update_calls_record_user_activity(viewer_user: User):
+    """Updated rating also triggers record_user_activity."""
+    video_id = uuid4()
+    req = RatingCreateOrUpdateRequest(rating=5)
+
+    ready_video = Video(
+        videoid=video_id,
+        userid=uuid4(),
+        added_date=datetime.now(timezone.utc),
+        name="Title",
+        location="http://a.b/c.mp4",
+        location_type=0,
+        status=VideoStatusEnum.READY,
+        title="Title",
+    )
+
+    existing_doc = {
+        "videoid": str(video_id),
+        "userid": str(viewer_user.userid),
+        "rating": 3,
+        "rating_date": datetime.now(timezone.utc),
+    }
+
+    with (
+        patch(
+            "app.services.rating_service.video_service.get_video_by_id",
+            new_callable=AsyncMock,
+        ) as mock_get_vid,
+        patch(
+            "app.services.rating_service.get_table", new_callable=AsyncMock
+        ) as mock_get_table,
+        patch(
+            "app.services.rating_service._update_video_aggregate_rating",
+            new_callable=AsyncMock,
+        ) as mock_update_agg,
+        patch(
+            "app.services.user_activity_service.get_table", new_callable=AsyncMock
+        ) as mock_ua_get_table,
+    ):
+        mock_get_vid.return_value = ready_video
+        ratings_tbl = AsyncMock()
+        videos_tbl = AsyncMock()
+        mock_get_table.side_effect = [ratings_tbl, videos_tbl]
+
+        ratings_tbl.find_one.return_value = existing_doc
+        ratings_tbl.update_one.return_value = {}
+
+        mock_ua_table = AsyncMock()
+        mock_ua_get_table.return_value = mock_ua_table
+
+        await rating_service.rate_video(video_id, req, viewer_user, db_table=ratings_tbl)
+
+        mock_ua_table.insert_one.assert_awaited_once()
+        doc = mock_ua_table.insert_one.call_args.args[0] if mock_ua_table.insert_one.call_args.args else mock_ua_table.insert_one.call_args.kwargs
+        assert doc["activity_type"] == "rate"
+
+
 # ---------------------------------------------------------------------------
 # Existing rating update
 # ---------------------------------------------------------------------------
