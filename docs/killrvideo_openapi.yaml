@@ -1271,6 +1271,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/users/{user_id_path}/activity:
+    get:
+      tags:
+      - User Activity
+      summary: Get user activity timeline
+      description: Return a paginated timeline of a user's activity over the last
+        30 days.
+      operationId: get_user_activity_api_v1_users__user_id_path__activity_get
+      parameters:
+      - name: user_id_path
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id Path
+      - name: activity_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - view
+            - comment
+            - rate
+            type: string
+          - type: 'null'
+          description: Filter by activity type (view, comment, rate)
+          title: Activity Type
+        description: Filter by activity type (view, comment, rate)
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          description: Page number
+          default: 1
+          title: Page
+        description: Page number
+      - name: pageSize
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          description: Items per page
+          default: 10
+          title: Pagesize
+        description: Items per page
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedResponse_UserActivityResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /:
     get:
       summary: Health check
@@ -1579,6 +1643,20 @@ components:
       - data
       - pagination
       title: PaginatedResponse[FlagResponse]
+    PaginatedResponse_UserActivityResponse_:
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/UserActivityResponse'
+          type: array
+          title: Data
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+      type: object
+      required:
+      - data
+      - pagination
+      title: PaginatedResponse[UserActivityResponse]
     PaginatedResponse_VideoSummary_:
       properties:
         data:
@@ -1743,6 +1821,31 @@ components:
       - email
       - userId
       title: User
+    UserActivityResponse:
+      properties:
+        userId:
+          type: string
+          format: uuid
+          title: Userid
+        activityType:
+          type: string
+          title: Activitytype
+        activityId:
+          type: string
+          format: uuid
+          title: Activityid
+        activityTimestamp:
+          type: string
+          format: date-time
+          title: Activitytimestamp
+      type: object
+      required:
+      - userId
+      - activityType
+      - activityId
+      - activityTimestamp
+      title: UserActivityResponse
+      description: API response representation for a single user activity item.
     UserCreateRequest:
       properties:
         firstName:
@@ -1873,7 +1976,7 @@ components:
         description:
           anyOf:
           - type: string
-            maxLength: 1000
+            maxLength: 2000
           - type: 'null'
           title: Description
         tags:
@@ -2127,7 +2230,7 @@ components:
         description:
           anyOf:
           - type: string
-            maxLength: 1000
+            maxLength: 2000
           - type: 'null'
           title: Description
         tags:
