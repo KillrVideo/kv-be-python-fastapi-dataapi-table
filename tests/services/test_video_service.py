@@ -243,7 +243,7 @@ async def test_record_video_view_success():
         # but we already pass mock_stats_table, so get_table will be used only once
         mock_get_table.return_value = mock_activity_table
 
-        await video_service.record_video_view(vid, mock_stats_table)
+        await video_service.record_video_view(vid, db_table=mock_stats_table)
 
         # Validate stats table increment
         mock_stats_table.update_one.assert_called_once_with(
@@ -251,6 +251,95 @@ async def test_record_video_view_success():
         )
 
         # Validate activity table log
+        mock_activity_table.insert_one.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_record_video_view_authenticated_user_activity():
+    """Authenticated view calls record_user_activity with real user ID."""
+    vid = uuid4()
+    viewer_id = uuid4()
+    mock_stats_table = AsyncMock()
+    mock_activity_table = AsyncMock()
+
+    with (
+        patch(
+            "app.services.video_service.get_table", new_callable=AsyncMock
+        ) as mock_get_table,
+        patch(
+            "app.services.user_activity_service.record_user_activity",
+            new_callable=AsyncMock,
+        ) as mock_record_user_activity,
+    ):
+        mock_get_table.return_value = mock_activity_table
+
+        await video_service.record_video_view(
+            vid, viewer_user_id=viewer_id, db_table=mock_stats_table
+        )
+
+        # record_user_activity should be called with the real user ID
+        mock_record_user_activity.assert_awaited_once_with(
+            userid=viewer_id,
+            activity_type="view",
+        )
+
+
+@pytest.mark.asyncio
+async def test_record_video_view_anonymous_user_activity():
+    """Anonymous view calls record_user_activity with nil UUID sentinel."""
+    from app.services.user_activity_service import ANONYMOUS_USER_ID
+
+    vid = uuid4()
+    mock_stats_table = AsyncMock()
+    mock_activity_table = AsyncMock()
+
+    with (
+        patch(
+            "app.services.video_service.get_table", new_callable=AsyncMock
+        ) as mock_get_table,
+        patch(
+            "app.services.user_activity_service.record_user_activity",
+            new_callable=AsyncMock,
+        ) as mock_record_user_activity,
+    ):
+        mock_get_table.return_value = mock_activity_table
+
+        await video_service.record_video_view(
+            vid, viewer_user_id=None, db_table=mock_stats_table
+        )
+
+        # record_user_activity should be called with the anonymous sentinel UUID
+        mock_record_user_activity.assert_awaited_once_with(
+            userid=ANONYMOUS_USER_ID,
+            activity_type="view",
+        )
+
+
+@pytest.mark.asyncio
+async def test_record_video_view_user_activity_failure_does_not_break():
+    """If record_user_activity raises, the video view still succeeds."""
+    vid = uuid4()
+    mock_stats_table = AsyncMock()
+    mock_activity_table = AsyncMock()
+
+    with (
+        patch(
+            "app.services.video_service.get_table", new_callable=AsyncMock
+        ) as mock_get_table,
+        patch(
+            "app.services.user_activity_service.record_user_activity",
+            new_callable=AsyncMock,
+        ) as mock_record_user_activity,
+    ):
+        mock_get_table.return_value = mock_activity_table
+        mock_record_user_activity.side_effect = Exception("DB error")
+
+        # Should NOT raise despite user_activity failure
+        await video_service.record_video_view(
+            vid, viewer_user_id=uuid4(), db_table=mock_stats_table
+        )
+
+        # video_activity insert still happened
         mock_activity_table.insert_one.assert_called_once()
 
 
@@ -276,7 +365,7 @@ async def test_list_latest_videos():
         mock_list_with_query.assert_called_once_with(
             {},
             1,
-            3,
+            10,
             sort_options={"added_date": -1},
             db_table=mock_db,
             source_table_name=video_service.VIDEOS_TABLE_NAME,
@@ -293,20 +382,18 @@ async def test_list_latest_videos():
 @pytest.mark.asyncio
 async def test_search_videos_by_keyword():
     mock_db = AsyncMock()
-    mock_db.find.return_value = []
-    mock_db.count_documents.return_value = 0
 
     with patch(
-        "app.services.video_service.list_videos_with_query",
+        "app.services.video_service.search_videos_by_semantic",
         new_callable=AsyncMock,
-    ) as mock_list_with_query:
-        mock_list_with_query.return_value = ([], 0)
+    ) as mock_semantic:
+        mock_semantic.return_value = ([], 0)
 
         summaries, total = await video_service.search_videos_by_keyword(
             query="test", page=1, page_size=10, db_table=mock_db
         )
 
-        mock_list_with_query.assert_called_once()
+        mock_semantic.assert_called_once()
         assert summaries == []
         assert total == 0
 

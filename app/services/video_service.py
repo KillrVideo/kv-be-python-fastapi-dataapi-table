@@ -383,6 +383,7 @@ async def update_video_details(
 
 async def record_video_view(
     video_id: VideoID,
+    viewer_user_id: Optional[UUID] = None,
     db_table: Optional[AstraDBCollection] = None,
 ) -> None:
     """Increment the view counter stored directly in the *videos* table.
@@ -449,18 +450,36 @@ async def record_video_view(
         else:
             raise
 
-    # Log individual view event in the time-series activity table (unchanged)
-    activity_table = await get_table(VIDEO_ACTIVITY_TABLE_NAME)
-    now_utc = datetime.now(timezone.utc)
-    day_partition = now_utc.strftime("%Y-%m-%d")  # Cassandra date literal format
-
-    await activity_table.insert_one(
-        {
-            "videoid": _uuid_for_db(video_id, db_table),
-            "day": day_partition,
-            "watch_time": str(uuid1()),  # time-based UUID for clustering order
-        }
+    from app.services.user_activity_service import (
+        record_user_activity,
+        ANONYMOUS_USER_ID,
     )
+
+    # Log individual view event in the time-series activity table (non-critical)
+    try:
+        activity_table = await get_table(VIDEO_ACTIVITY_TABLE_NAME)
+        now_utc = datetime.now(timezone.utc)
+        day_partition = now_utc.strftime("%Y-%m-%d")  # Cassandra date literal format
+
+        await activity_table.insert_one(
+            {
+                "videoid": _uuid_for_db(video_id, db_table),
+                "day": day_partition,
+                "watch_time": str(uuid1()),  # time-based UUID for clustering order
+            }
+        )
+    except Exception:
+        logger.warning("video_activity insert failed for view; ignoring", exc_info=True)
+
+    # Track in user_activity (never fail the view operation)
+    try:
+        effective_user_id = viewer_user_id if viewer_user_id else ANONYMOUS_USER_ID
+        await record_user_activity(
+            userid=effective_user_id,
+            activity_type="view",
+        )
+    except Exception:
+        logger.warning("user_activity insert failed for view; ignoring", exc_info=True)
 
 
 async def list_videos_with_query(
