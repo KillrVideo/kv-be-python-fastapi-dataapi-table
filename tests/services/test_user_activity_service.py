@@ -360,3 +360,40 @@ async def test_record_user_activity_each_activity_type():
         insert_call = mock_table.insert_one.call_args
         doc = insert_call.args[0] if insert_call.args else insert_call.kwargs
         assert doc["activity_type"] == activity_type
+
+
+@pytest.mark.asyncio
+async def test_list_user_activity_page_beyond_data():
+    """Requesting a page beyond available data returns empty list with correct total."""
+    userid = uuid4()
+    now = datetime.now(timezone.utc)
+    today_str = now.strftime("%Y-%m-%d")
+
+    rows = [
+        {
+            "userid": str(userid),
+            "day": today_str,
+            "activity_type": "view",
+            "activity_id": str(uuid1()),
+            "activity_timestamp": now,
+        }
+        for _ in range(3)
+    ]
+
+    def mock_find(filter=None, **kwargs):
+        cursor = AsyncMock()
+        if filter and filter.get("day") == today_str:
+            cursor.to_list = AsyncMock(return_value=rows)
+        else:
+            cursor.to_list = AsyncMock(return_value=[])
+        return cursor
+
+    mock_table = AsyncMock()
+    mock_table.find = mock_find
+
+    activities, total = await list_user_activity(
+        userid=userid, page=99, page_size=10, db_table=mock_table,
+    )
+
+    assert total == 3
+    assert activities == []
