@@ -236,9 +236,15 @@ async def test_record_video_view_success():
     # Mock the activity table returned via get_table
     mock_activity_table = AsyncMock()
 
-    with patch(
-        "app.services.video_service.get_table", new_callable=AsyncMock
-    ) as mock_get_table:
+    with (
+        patch(
+            "app.services.video_service.get_table", new_callable=AsyncMock
+        ) as mock_get_table,
+        patch(
+            "app.services.user_activity_service.record_user_activity",
+            new_callable=AsyncMock,
+        ) as mock_record_user_activity,
+    ):
         # First call inside record_video_view is for VIDEO_PLAYBACK_STATS_TABLE_NAME
         # but we already pass mock_stats_table, so get_table will be used only once
         mock_get_table.return_value = mock_activity_table
@@ -252,6 +258,9 @@ async def test_record_video_view_success():
 
         # Validate activity table log
         mock_activity_table.insert_one.assert_called_once()
+
+        # Validate user activity was tracked (regression guard)
+        mock_record_user_activity.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -277,10 +286,11 @@ async def test_record_video_view_authenticated_user_activity():
             vid, viewer_user_id=viewer_id, db_table=mock_stats_table
         )
 
-        # record_user_activity should be called with the real user ID
+        # record_user_activity should be called with the real user ID and video_id
         mock_record_user_activity.assert_awaited_once_with(
             userid=viewer_id,
             activity_type="view",
+            activity_id=vid,
         )
 
 
@@ -308,10 +318,11 @@ async def test_record_video_view_anonymous_user_activity():
             vid, viewer_user_id=None, db_table=mock_stats_table
         )
 
-        # record_user_activity should be called with the anonymous sentinel UUID
+        # record_user_activity should be called with the anonymous sentinel UUID and video_id
         mock_record_user_activity.assert_awaited_once_with(
             userid=ANONYMOUS_USER_ID,
             activity_type="view",
+            activity_id=vid,
         )
 
 

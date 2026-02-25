@@ -427,7 +427,7 @@ async def record_video_view(
                     "UNSUPPORTED_UPDATE_OPERATIONS_FOR_TABLE"
                 )
                 _logged_views_disabled = True
-            return  # Gracefully no-op without breaking the API contract
+            pass  # Gracefully no-op for views counter; continue to activity tracking below
 
         # Some deployments (Astra *tables*) currently reject $inc on bigint –
         # fall back to a manual read-modify-write cycle.
@@ -477,6 +477,7 @@ async def record_video_view(
         await record_user_activity(
             userid=effective_user_id,
             activity_type="view",
+            activity_id=video_id,
         )
     except Exception:
         logger.warning("user_activity insert failed for view; ignoring", exc_info=True)
