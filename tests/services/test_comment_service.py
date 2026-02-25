@@ -87,15 +87,14 @@ async def test_add_comment_calls_record_user_activity(viewer_user: User, sample_
             "app.services.comment_service.get_table", new_callable=AsyncMock
         ) as mock_get_table,
         patch(
-            "app.services.user_activity_service.get_table", new_callable=AsyncMock
-        ) as mock_ua_get_table,
+            "app.services.comment_service.record_user_activity",
+            new_callable=AsyncMock,
+        ) as mock_record_activity,
     ):
         mock_get_vid.return_value = sample_video
         mock_table_video = AsyncMock()
         mock_table_user = AsyncMock()
         mock_get_table.side_effect = [mock_table_video, mock_table_user]
-        mock_ua_table = AsyncMock()
-        mock_ua_get_table.return_value = mock_ua_table
 
         comment = await comment_service.add_comment_to_video(
             video_id=sample_video.videoid,
@@ -103,17 +102,17 @@ async def test_add_comment_calls_record_user_activity(viewer_user: User, sample_
             current_user=viewer_user,
         )
 
-        # Verify record_user_activity was called via DB insert
-        mock_ua_table.insert_one.assert_awaited_once()
-        doc = mock_ua_table.insert_one.call_args.args[0] if mock_ua_table.insert_one.call_args.args else mock_ua_table.insert_one.call_args.kwargs
-        assert doc["userid"] == str(viewer_user.userid)
-        assert doc["activity_type"] == "comment"
-        assert doc["activity_id"] == str(comment.commentid)
+        # Verify record_user_activity was called with the correct contract arguments
+        mock_record_activity.assert_awaited_once_with(
+            userid=viewer_user.userid,
+            activity_type="comment",
+            activity_id=comment.commentid,
+        )
 
 
 @pytest.mark.asyncio
 async def test_add_comment_user_activity_failure_does_not_break(viewer_user: User, sample_video: Video):
-    """If user_activity insert fails, the comment still succeeds."""
+    """If record_user_activity raises, the comment operation still succeeds."""
     request = CommentCreateRequest(text="Still works!")
     sample_video.status = VideoStatusEnum.READY
 
@@ -126,18 +125,17 @@ async def test_add_comment_user_activity_failure_does_not_break(viewer_user: Use
             "app.services.comment_service.get_table", new_callable=AsyncMock
         ) as mock_get_table,
         patch(
-            "app.services.user_activity_service.get_table", new_callable=AsyncMock
-        ) as mock_ua_get_table,
+            "app.services.comment_service.record_user_activity",
+            new_callable=AsyncMock,
+        ) as mock_record_activity,
     ):
         mock_get_vid.return_value = sample_video
         mock_table_video = AsyncMock()
         mock_table_user = AsyncMock()
         mock_get_table.side_effect = [mock_table_video, mock_table_user]
-        mock_ua_table = AsyncMock()
-        mock_ua_table.insert_one.side_effect = Exception("DB error")
-        mock_ua_get_table.return_value = mock_ua_table
+        mock_record_activity.side_effect = Exception("activity service error")
 
-        # Should NOT raise despite user_activity failure
+        # Should NOT raise despite record_user_activity failure
         comment = await comment_service.add_comment_to_video(
             video_id=sample_video.videoid,
             request=request,

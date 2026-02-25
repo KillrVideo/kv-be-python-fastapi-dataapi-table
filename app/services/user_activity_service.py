@@ -50,15 +50,23 @@ async def record_user_activity(
     now_utc = datetime.now(timezone.utc)
     day_partition = now_utc.strftime("%Y-%m-%d")
 
-    await db_table.insert_one(
-        {
-            "userid": str(userid),
-            "day": day_partition,
-            "activity_type": activity_type,
-            "activity_id": str(activity_id),
-            "activity_timestamp": now_utc.isoformat(),
-        }
-    )
+    try:
+        await db_table.insert_one(
+            {
+                "userid": str(userid),
+                "day": day_partition,
+                "activity_type": activity_type,
+                "activity_id": str(activity_id),
+                "activity_timestamp": now_utc.isoformat(),
+            }
+        )
+    except Exception:
+        logger.warning(
+            "Failed to record user activity for userid=%s activity_type=%s; skipping.",
+            userid,
+            activity_type,
+            exc_info=True,
+        )
 
 
 async def _fetch_day_rows(

@@ -334,17 +334,22 @@ async def test_list_user_activity_error_in_partition_is_skipped():
 
 
 @pytest.mark.asyncio
-async def test_record_user_activity_db_failure_raises():
-    """record_user_activity raises on DB failure; callers must wrap in try/except."""
+async def test_record_user_activity_db_failure_graceful():
+    """record_user_activity does not raise on DB failure — it logs a warning instead."""
     mock_table = AsyncMock()
     mock_table.insert_one.side_effect = Exception("DB connection lost")
 
-    with pytest.raises(Exception, match="DB connection lost"):
+    with patch("app.services.user_activity_service.logger") as mock_logger:
+        # Should NOT raise
         await record_user_activity(
             userid=uuid4(),
             activity_type="view",
             db_table=mock_table,
         )
+
+        mock_logger.warning.assert_called_once()
+        warning_msg = mock_logger.warning.call_args[0][0]
+        assert "Failed to record user activity" in warning_msg
 
 
 @pytest.mark.asyncio

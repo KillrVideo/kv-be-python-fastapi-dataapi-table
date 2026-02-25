@@ -73,6 +73,7 @@ async def test_get_user_activity_empty():
         body = resp.json()
         assert body["data"] == []
         assert body["pagination"]["totalItems"] == 0
+        assert body["pagination"]["totalPages"] == 0
 
 
 @pytest.mark.asyncio
@@ -131,3 +132,13 @@ async def test_get_user_activity_pagination(sample_activities):
         assert body["pagination"]["pageSize"] == 1
         assert body["pagination"]["totalItems"] == 2
         assert body["pagination"]["totalPages"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_user_activity_invalid_type_returns_422():
+    """An unrecognised activity_type value must produce a 422 validation error."""
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        resp = await ac.get(
+            f"{settings.API_V1_STR}/users/{uuid4()}/activity?activity_type=invalid"
+        )
+    assert resp.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
