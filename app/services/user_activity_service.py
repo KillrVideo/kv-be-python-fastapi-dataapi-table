@@ -122,9 +122,10 @@ async def list_user_activity(
         for delta in range(30)
     ]
 
-    # Run all 30 partition queries concurrently; pass per-day limit to avoid
-    # pulling more rows than we could ever display.
-    per_day_limit = MAX_ACTIVITY_ROWS
+    # Run all 30 partition queries concurrently; divide the total cap evenly
+    # across all partitions so that 30 x per_day_limit stays bounded at
+    # ~MAX_ACTIVITY_ROWS rather than 30 x MAX_ACTIVITY_ROWS.
+    per_day_limit = max(1, MAX_ACTIVITY_ROWS // 30)
 
     results: List[List[dict]] = await asyncio.gather(
         *[

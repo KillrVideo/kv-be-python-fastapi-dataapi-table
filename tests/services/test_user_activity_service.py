@@ -10,6 +10,7 @@ from app.services.user_activity_service import (
     list_user_activity,
     ANONYMOUS_USER_ID,
     USER_ACTIVITY_TABLE_NAME,
+    MAX_ACTIVITY_ROWS,
 )
 from app.models.user_activity import UserActivity
 
@@ -360,6 +361,38 @@ async def test_record_user_activity_each_activity_type():
         insert_call = mock_table.insert_one.call_args
         doc = insert_call.args[0] if insert_call.args else insert_call.kwargs
         assert doc["activity_type"] == activity_type
+
+
+@pytest.mark.asyncio
+async def test_list_user_activity_per_day_limit_is_bounded():
+    """list_user_activity passes a per-partition limit of MAX_ACTIVITY_ROWS//30, not MAX_ACTIVITY_ROWS.
+
+    With 30 partitions the naive limit would allow up to 30 x MAX_ACTIVITY_ROWS rows
+    to be fetched before the post-gather trim.  The bounded limit keeps the total
+    near MAX_ACTIVITY_ROWS.
+    """
+    captured_limits: list[int] = []
+
+    def mock_find(filter=None, limit=None, **kwargs):
+        if limit is not None:
+            captured_limits.append(limit)
+        cursor = AsyncMock()
+        cursor.to_list = AsyncMock(return_value=[])
+        return cursor
+
+    mock_table = AsyncMock()
+    mock_table.find = mock_find
+
+    await list_user_activity(userid=uuid4(), page=1, page_size=10, db_table=mock_table)
+
+    expected_limit = max(1, MAX_ACTIVITY_ROWS // 30)
+    assert len(captured_limits) == 30, "Expected find() to be called for all 30 partitions"
+    assert all(
+        lim == expected_limit for lim in captured_limits
+    ), f"All per-day limits should be {expected_limit}, got: {set(captured_limits)}"
+    # Confirm the per-day limit is strictly less than MAX_ACTIVITY_ROWS so that
+    # 30 partitions cannot return more than ~MAX_ACTIVITY_ROWS rows total.
+    assert expected_limit < MAX_ACTIVITY_ROWS
 
 
 @pytest.mark.asyncio
