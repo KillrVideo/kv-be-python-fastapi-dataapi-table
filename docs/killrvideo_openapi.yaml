@@ -1873,7 +1873,7 @@ components:
         description:
           anyOf:
           - type: string
-            maxLength: 1000
+            maxLength: 2000
           - type: 'null'
           title: Description
         tags:
@@ -2127,7 +2127,7 @@ components:
         description:
           anyOf:
           - type: string
-            maxLength: 1000
+            maxLength: 2000
           - type: 'null'
           title: Description
         tags:
