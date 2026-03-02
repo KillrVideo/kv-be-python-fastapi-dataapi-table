@@ -13,11 +13,26 @@ layers share the same pagination logic regardless of the underlying storage
 object.
 """
 
+import logging
 from typing import Any, Dict
 
 from astrapy.exceptions.data_api_exceptions import DataAPIResponseException  # type: ignore
 
 __all__ = ["safe_count"]
+
+_ASTRAPY_LOGGER = logging.getLogger("astrapy.utils.api_commander")
+
+
+class _SuppressUnsupportedTableCommand(logging.Filter):
+    """Drop UNSUPPORTED_TABLE_COMMAND WARNING records from the astrapy logger.
+
+    astrapy emits a WARNING before raising DataAPIResponseException.  For the
+    expected case of ``countDocuments`` on a CQL table we catch and handle the
+    exception ourselves, so the warning is noise rather than signal.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "UNSUPPORTED_TABLE_COMMAND" not in record.getMessage()
 
 
 async def safe_count(
@@ -33,12 +48,16 @@ async def safe_count(
     an exception.  The same applies to stub collections used in unit-tests.
     """
 
+    _filter = _SuppressUnsupportedTableCommand()
+    _ASTRAPY_LOGGER.addFilter(_filter)
     try:
         return await db_table.count_documents(filter=query_filter, upper_bound=10**9)
-    except (TypeError, DataAPIResponseException) as exc:  # pragma: no cover – fallback
+    except (TypeError, DataAPIResponseException) as exc:
         if isinstance(
             exc, DataAPIResponseException
         ) and "UNSUPPORTED_TABLE_COMMAND" not in str(exc):
             # An unexpected Data API error – surface to caller.
             raise
         return fallback_len
+    finally:
+        _ASTRAPY_LOGGER.removeFilter(_filter)
