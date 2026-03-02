@@ -14,25 +14,32 @@ object.
 """
 
 import logging
-from typing import Any, Dict
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator
 
 from astrapy.exceptions.data_api_exceptions import DataAPIResponseException  # type: ignore
 
-__all__ = ["safe_count"]
+__all__ = ["safe_count", "suppress_astrapy_warnings"]
 
 _ASTRAPY_LOGGER = logging.getLogger("astrapy.utils.api_commander")
 
 
-class _SuppressUnsupportedTableCommand(logging.Filter):
-    """Drop UNSUPPORTED_TABLE_COMMAND WARNING records from the astrapy logger.
+class _SuppressAstrapyWarnings(logging.Filter):
+    """Drop WARNING records whose message contains any of the given substrings.
 
-    astrapy emits a WARNING before raising DataAPIResponseException.  For the
-    expected case of ``countDocuments`` on a CQL table we catch and handle the
-    exception ourselves, so the warning is noise rather than signal.
+    astrapy emits WARNINGs for certain operations that we handle or expect
+    (e.g. ``UNSUPPORTED_TABLE_COMMAND`` on tables, ``ZERO_FILTER_OPERATIONS``
+    for unfiltered queries).  This filter suppresses only the specified codes
+    so legitimate warnings still surface.
     """
 
+    def __init__(self, substrings: frozenset[str]) -> None:
+        super().__init__()
+        self._substrings = substrings
+
     def filter(self, record: logging.LogRecord) -> bool:
-        return "UNSUPPORTED_TABLE_COMMAND" not in record.getMessage()
+        msg = record.getMessage()
+        return not any(s in msg for s in self._substrings)
 
 
 async def safe_count(
@@ -48,7 +55,7 @@ async def safe_count(
     an exception.  The same applies to stub collections used in unit-tests.
     """
 
-    _filter = _SuppressUnsupportedTableCommand()
+    _filter = _SuppressAstrapyWarnings(frozenset({"UNSUPPORTED_TABLE_COMMAND"}))
     _ASTRAPY_LOGGER.addFilter(_filter)
     try:
         return await db_table.count_documents(filter=query_filter, upper_bound=10**9)
@@ -59,5 +66,23 @@ async def safe_count(
             # An unexpected Data API error – surface to caller.
             raise
         return fallback_len
+    finally:
+        _ASTRAPY_LOGGER.removeFilter(_filter)
+
+
+@contextmanager
+def suppress_astrapy_warnings(*warning_codes: str) -> Iterator[None]:
+    """Temporarily suppress astrapy warnings matching any of *warning_codes*.
+
+    Usage::
+
+        with suppress_astrapy_warnings("ZERO_FILTER_OPERATIONS", "IN_MEMORY_SORTING"):
+            cursor = db_table.find(...)
+            docs = await cursor.to_list()
+    """
+    _filter = _SuppressAstrapyWarnings(frozenset(warning_codes))
+    _ASTRAPY_LOGGER.addFilter(_filter)
+    try:
+        yield
     finally:
         _ASTRAPY_LOGGER.removeFilter(_filter)

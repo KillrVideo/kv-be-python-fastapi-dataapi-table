@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 from astrapy.exceptions.data_api_exceptions import DataAPIResponseException  # type: ignore[import]
 
-from app.utils.db_helpers import safe_count
+from app.utils.db_helpers import safe_count, suppress_astrapy_warnings
 
 _ASTRAPY_LOGGER = "astrapy.utils.api_commander"
 
@@ -96,3 +96,52 @@ async def test_safe_count_does_not_log_warning_for_unsupported_table_command(cap
     assert unsupported_warnings == [], (
         "safe_count should suppress astrapy's UNSUPPORTED_TABLE_COMMAND warning"
     )
+
+
+# ---------------------------------------------------------------------------
+# suppress_astrapy_warnings context manager
+# ---------------------------------------------------------------------------
+
+
+def test_suppress_astrapy_warnings_suppresses_matching_codes(caplog):
+    """Warnings matching any of the specified codes are suppressed."""
+    astrapy_logger = logging.getLogger(_ASTRAPY_LOGGER)
+
+    with caplog.at_level(logging.WARNING, logger=_ASTRAPY_LOGGER):
+        with suppress_astrapy_warnings("ZERO_FILTER_OPERATIONS", "IN_MEMORY_SORTING"):
+            astrapy_logger.warning("ZERO_FILTER_OPERATIONS on table videos")
+            astrapy_logger.warning("IN_MEMORY_SORTING due to non-partition key")
+
+    matching = [
+        r for r in caplog.records
+        if ("ZERO_FILTER_OPERATIONS" in r.getMessage()
+            or "IN_MEMORY_SORTING" in r.getMessage())
+        and r.levelno >= logging.WARNING
+    ]
+    assert matching == [], "suppress_astrapy_warnings should suppress matching warnings"
+
+
+def test_suppress_astrapy_warnings_passes_unrelated_warnings(caplog):
+    """Warnings that don't match any specified code still appear."""
+    astrapy_logger = logging.getLogger(_ASTRAPY_LOGGER)
+
+    with caplog.at_level(logging.WARNING, logger=_ASTRAPY_LOGGER):
+        with suppress_astrapy_warnings("ZERO_FILTER_OPERATIONS"):
+            astrapy_logger.warning("SOMETHING_ELSE happened")
+
+    unrelated = [
+        r for r in caplog.records
+        if "SOMETHING_ELSE" in r.getMessage()
+    ]
+    assert len(unrelated) == 1, "Unrelated warnings must not be suppressed"
+
+
+def test_suppress_astrapy_warnings_removes_filter_after_exit():
+    """The filter is removed from the logger when the context exits."""
+    astrapy_logger = logging.getLogger(_ASTRAPY_LOGGER)
+    baseline = len(astrapy_logger.filters)
+
+    with suppress_astrapy_warnings("ZERO_FILTER_OPERATIONS"):
+        assert len(astrapy_logger.filters) == baseline + 1
+
+    assert len(astrapy_logger.filters) == baseline
