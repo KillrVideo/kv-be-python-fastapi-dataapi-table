@@ -477,7 +477,6 @@ async def record_video_view(
         await record_user_activity(
             userid=effective_user_id,
             activity_type="view",
-            activity_id=video_id,
         )
     except Exception:
         logger.warning("user_activity insert failed for view; ignoring", exc_info=True)
