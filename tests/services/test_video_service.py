@@ -227,13 +227,11 @@ async def test_update_video_details_no_changes():
 
 @pytest.mark.asyncio
 async def test_record_video_view_success():
+    """View counter uses read-modify-write ($set) — the Table API does not support $inc."""
     vid = uuid4()
 
-    # Mock the playback stats table passed explicitly
     mock_stats_table = AsyncMock()
-    mock_stats_table.update_one.return_value = AsyncMock()
-
-    # Mock the activity table returned via get_table
+    mock_stats_table.find_one.return_value = {"views": 5}
     mock_activity_table = AsyncMock()
 
     with (
@@ -245,15 +243,14 @@ async def test_record_video_view_success():
             new_callable=AsyncMock,
         ) as mock_record_user_activity,
     ):
-        # First call inside record_video_view is for VIDEO_PLAYBACK_STATS_TABLE_NAME
-        # but we already pass mock_stats_table, so get_table will be used only once
         mock_get_table.return_value = mock_activity_table
 
         await video_service.record_video_view(vid, db_table=mock_stats_table)
 
-        # Validate stats table increment
+        # Must read current value first, then write the incremented value
+        mock_stats_table.find_one.assert_awaited_once()
         mock_stats_table.update_one.assert_called_once_with(
-            filter={"videoid": vid}, update={"$inc": {"views": 1}}, upsert=True
+            filter={"videoid": vid}, update={"$set": {"views": 6}}, upsert=True
         )
 
         # Validate activity table log
@@ -264,11 +261,33 @@ async def test_record_video_view_success():
 
 
 @pytest.mark.asyncio
+async def test_record_video_view_no_existing_row():
+    """When the video has no existing views row, count starts at 1."""
+    vid = uuid4()
+
+    mock_stats_table = AsyncMock()
+    mock_stats_table.find_one.return_value = None  # no row yet
+    mock_activity_table = AsyncMock()
+
+    with (
+        patch("app.services.video_service.get_table", new_callable=AsyncMock) as mock_get_table,
+        patch("app.services.user_activity_service.record_user_activity", new_callable=AsyncMock),
+    ):
+        mock_get_table.return_value = mock_activity_table
+        await video_service.record_video_view(vid, db_table=mock_stats_table)
+
+        mock_stats_table.update_one.assert_called_once_with(
+            filter={"videoid": vid}, update={"$set": {"views": 1}}, upsert=True
+        )
+
+
+@pytest.mark.asyncio
 async def test_record_video_view_authenticated_user_activity():
     """Authenticated view calls record_user_activity with real user ID."""
     vid = uuid4()
     viewer_id = uuid4()
     mock_stats_table = AsyncMock()
+    mock_stats_table.find_one.return_value = None
     mock_activity_table = AsyncMock()
 
     with (
@@ -301,6 +320,7 @@ async def test_record_video_view_anonymous_user_activity():
 
     vid = uuid4()
     mock_stats_table = AsyncMock()
+    mock_stats_table.find_one.return_value = None
     mock_activity_table = AsyncMock()
 
     with (
@@ -331,6 +351,7 @@ async def test_record_video_view_user_activity_failure_does_not_break():
     """If record_user_activity raises, the video view still succeeds."""
     vid = uuid4()
     mock_stats_table = AsyncMock()
+    mock_stats_table.find_one.return_value = None
     mock_activity_table = AsyncMock()
 
     with (

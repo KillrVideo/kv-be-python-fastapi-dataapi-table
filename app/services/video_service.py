@@ -88,10 +88,6 @@ logger.info(
     logging.getLogger().getEffectiveLevel(),
 )
 
-# Flag to track if we've logged the view tracking limitation warning
-_logged_views_disabled = False
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -388,67 +384,24 @@ async def record_video_view(
 ) -> None:
     """Increment the view counter stored directly in the *videos* table.
 
-    NOTE: View tracking is currently disabled. The 'views' column exists in the
-    CQL schema but is not yet exposed via the Astra DB Table API. This function
-    will gracefully no-op until API support is added.
-
-    The dedicated ``video_playback_stats`` counter table is no longer updated –
-    we instead mutate the new ``views`` bigint column in the primary table so
-    the entire workflow remains Data-API-only.
+    The Astra DB Table API does not support ``$inc``, so we use a read-modify-write
+    cycle: fetch the current ``views`` value and write back with ``$set``.
     """
 
     if db_table is None:
         db_table = await get_table(VIDEOS_TABLE_NAME)
 
-    try:
-        # Fast path – $inc is accepted on normal bigint columns
-        await db_table.update_one(
-            filter={"videoid": _uuid_for_db(video_id, db_table)},
-            update={"$inc": {"views": 1}},
-            upsert=True,
-        )
-    except DataAPIResponseException as exc:
-        global _logged_views_disabled
-        error_str = str(exc)
-
-        # Check if this is the known Table API limitation where the 'views' column
-        # exists in CQL schema but isn't exposed via the Table API yet
-        if (
-            "UNKNOWN_TABLE_COLUMNS" in error_str
-            or "UNSUPPORTED_UPDATE_OPERATIONS" in error_str
-        ):
-            # Log warning once per process lifecycle to avoid log spam
-            if not _logged_views_disabled:
-                logger.warning(
-                    "View tracking is currently disabled. The 'views' column exists in "
-                    "the CQL schema (docs/schema-astra.cql:95) but is not yet exposed "
-                    "via the Astra DB Table API. Views will not be tracked until API "
-                    "support is added. Error codes: UNKNOWN_TABLE_COLUMNS / "
-                    "UNSUPPORTED_UPDATE_OPERATIONS_FOR_TABLE"
-                )
-                _logged_views_disabled = True
-            pass  # Gracefully no-op for views counter; continue to activity tracking below
-
-        # Some deployments (Astra *tables*) currently reject $inc on bigint –
-        # fall back to a manual read-modify-write cycle.
-        if (
-            "Update operation not supported" in error_str
-            or "unsupported operations" in error_str
-        ):
-            current = (
-                await db_table.find_one(
-                    filter={"videoid": _uuid_for_db(video_id, db_table)}
-                )
-                or {}
-            )
-            new_count = int(current.get("views", 0)) + 1
-            await db_table.update_one(
-                filter={"videoid": _uuid_for_db(video_id, db_table)},
-                update={"$set": {"views": new_count}},
-                upsert=True,
-            )
-        else:
-            raise
+    # The Astra DB Table API does not support $inc. Use read-modify-write with $set.
+    current = (
+        await db_table.find_one(filter={"videoid": _uuid_for_db(video_id, db_table)})
+        or {}
+    )
+    new_count = int(current.get("views", 0)) + 1
+    await db_table.update_one(
+        filter={"videoid": _uuid_for_db(video_id, db_table)},
+        update={"$set": {"views": new_count}},
+        upsert=True,
+    )
 
     from app.services.user_activity_service import (
         record_user_activity,
