@@ -6,7 +6,8 @@ import types
 # ---------------------------------------------------------------------------
 # Stub for `astrapy` when the real package is not installed (CI / unit tests)
 # ---------------------------------------------------------------------------
-if "astrapy" not in sys.modules:  # pragma: no cover
+import importlib.util as _importlib_util
+if _importlib_util.find_spec("astrapy") is None:  # pragma: no cover
     astrapy_stub = types.ModuleType("astrapy")
     db_stub = types.ModuleType("astrapy.db")
 

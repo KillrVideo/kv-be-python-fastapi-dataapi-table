@@ -256,7 +256,10 @@ async def record_view(
         )
 
     # READY – record the view
-    await video_service.record_video_view(video_id_path)
+    await video_service.record_video_view(
+        video_id_path,
+        viewer_user_id=current_user.userid if current_user else None,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

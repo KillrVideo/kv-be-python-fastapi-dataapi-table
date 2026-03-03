@@ -48,6 +48,10 @@ async def test_add_comment_success(viewer_user: User, sample_video: Video):
         patch(
             "app.services.comment_service.get_table", new_callable=AsyncMock
         ) as mock_get_table,
+        patch(
+            "app.services.comment_service.record_user_activity",
+            new_callable=AsyncMock,
+        ),
     ):
         mock_get_vid.return_value = sample_video
         mock_table_video = AsyncMock()
@@ -65,6 +69,82 @@ async def test_add_comment_success(viewer_user: User, sample_video: Video):
         assert comment.comment == request.text
         assert comment.videoid == sample_video.videoid
         assert comment.userid == viewer_user.userid
+        assert comment.text == request.text
+
+
+@pytest.mark.asyncio
+async def test_add_comment_calls_record_user_activity(viewer_user: User, sample_video: Video):
+    """add_comment_to_video calls record_user_activity with correct args."""
+    request = CommentCreateRequest(text="Great stuff!")
+    sample_video.status = VideoStatusEnum.READY
+
+    with (
+        patch(
+            "app.services.comment_service.video_service.get_video_by_id",
+            new_callable=AsyncMock,
+        ) as mock_get_vid,
+        patch(
+            "app.services.comment_service.get_table", new_callable=AsyncMock
+        ) as mock_get_table,
+        patch(
+            "app.services.comment_service.record_user_activity",
+            new_callable=AsyncMock,
+        ) as mock_record_activity,
+    ):
+        mock_get_vid.return_value = sample_video
+        mock_table_video = AsyncMock()
+        mock_table_user = AsyncMock()
+        mock_get_table.side_effect = [mock_table_video, mock_table_user]
+
+        comment = await comment_service.add_comment_to_video(
+            video_id=sample_video.videoid,
+            request=request,
+            current_user=viewer_user,
+        )
+
+        # Verify record_user_activity was called with the correct contract arguments
+        mock_record_activity.assert_awaited_once_with(
+            userid=viewer_user.userid,
+            activity_type="comment",
+            activity_id=comment.commentid,
+        )
+
+
+@pytest.mark.asyncio
+async def test_add_comment_user_activity_failure_does_not_break(viewer_user: User, sample_video: Video):
+    """If record_user_activity raises, the comment operation still succeeds."""
+    request = CommentCreateRequest(text="Still works!")
+    sample_video.status = VideoStatusEnum.READY
+
+    with (
+        patch(
+            "app.services.comment_service.video_service.get_video_by_id",
+            new_callable=AsyncMock,
+        ) as mock_get_vid,
+        patch(
+            "app.services.comment_service.get_table", new_callable=AsyncMock
+        ) as mock_get_table,
+        patch(
+            "app.services.comment_service.record_user_activity",
+            new_callable=AsyncMock,
+        ) as mock_record_activity,
+    ):
+        mock_get_vid.return_value = sample_video
+        mock_table_video = AsyncMock()
+        mock_table_user = AsyncMock()
+        mock_get_table.side_effect = [mock_table_video, mock_table_user]
+        mock_record_activity.side_effect = Exception("activity service error")
+
+        # Should NOT raise despite record_user_activity failure
+        comment = await comment_service.add_comment_to_video(
+            video_id=sample_video.videoid,
+            request=request,
+            current_user=viewer_user,
+        )
+
+        # Comment tables were still written
+        assert mock_table_video.insert_one.call_count == 1
+        assert mock_table_user.insert_one.call_count == 1
         assert comment.text == request.text
 
 

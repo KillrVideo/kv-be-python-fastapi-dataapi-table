@@ -28,6 +28,7 @@ from app.api.v1.endpoints import (
     reco_internal,
     flags,
     moderation,
+    user_activity,
 )
 
 # --------------------------------------------------------------
@@ -67,6 +68,7 @@ api_router_v1.include_router(recommendations_feed.router)
 api_router_v1.include_router(reco_internal.router)
 api_router_v1.include_router(flags.router)
 api_router_v1.include_router(moderation.router)
+api_router_v1.include_router(user_activity.router)
 
 app.include_router(api_router_v1)
 

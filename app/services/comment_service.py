@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Optional, List, Tuple
 from uuid import UUID, uuid1
 
@@ -15,9 +16,12 @@ from app.services import video_service, user_service
 from app.external_services.sentiment_mock import MockSentimentAnalyzer
 import inspect  # local import to avoid new dependency
 from app.utils.db_helpers import safe_count
+from app.services.user_activity_service import record_user_activity
 
 # testing mocks
 from unittest.mock import AsyncMock, MagicMock
+
+logger = logging.getLogger(__name__)
 
 COMMENTS_BY_VIDEO_TABLE_NAME = "comments"
 COMMENTS_BY_USER_TABLE_NAME = "comments_by_user"
@@ -89,6 +93,18 @@ async def add_comment_to_video(
     # Write to both tables
     await comments_by_video_table.insert_one(document=comment_doc)
     await comments_by_user_table.insert_one(document=comment_doc)
+
+    # Track in user_activity (never fail the comment operation)
+    try:
+        await record_user_activity(
+            userid=current_user.userid,
+            activity_type="comment",
+            activity_id=comment_id,
+        )
+    except Exception:
+        logger.warning(
+            "user_activity insert failed for comment; ignoring", exc_info=True
+        )
 
     return new_comment
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from uuid import UUID
@@ -18,7 +19,10 @@ from app.models.rating import (
 from app.models.video import VideoID, VideoStatusEnum
 from app.models.user import User
 from app.services import video_service
+from app.services.user_activity_service import record_user_activity
 from astrapy.exceptions.data_api_exceptions import DataAPIResponseException
+
+logger = logging.getLogger(__name__)
 
 RATINGS_TABLE_NAME = video_service.VIDEO_RATINGS_TABLE_NAME  # "video_ratings_by_user"
 RATINGS_SUMMARY_TABLE_NAME = video_service.VIDEO_RATINGS_SUMMARY_TABLE_NAME
@@ -26,45 +30,56 @@ RATINGS_SUMMARY_TABLE_NAME = video_service.VIDEO_RATINGS_SUMMARY_TABLE_NAME
 
 async def _update_video_aggregate_rating(
     video_id: VideoID,
-    ratings_db_table: AstraDBCollection,
-    videos_db_table: AstraDBCollection,
+    new_rating: int,
+    old_rating: int | None = None,
+    summary_db_table: AstraDBCollection | None = None,
 ) -> None:
-    """Recalculate average and total ratings count for the given video."""
+    """Increment counters on the video_ratings summary table.
 
-    cursor = ratings_db_table.find(
-        filter={"videoid": str(video_id)}, projection={"rating": 1}
-    )
-    docs: List[Dict[str, Any]] = (
-        await cursor.to_list() if hasattr(cursor, "to_list") else cursor
-    )
+    * **New rating** (old_rating is None): increment rating_counter by 1 and
+      rating_total by new_rating.
+    * **Updated rating** (old_rating provided): increment rating_total by
+      (new_rating - old_rating) only — counter stays the same.
+    """
 
-    if docs:
-        values = [int(d["rating"]) for d in docs if "rating" in d]
-        total = len(values)
-        average = sum(values) / total if total else None
+    if summary_db_table is None:
+        summary_db_table = await get_table(RATINGS_SUMMARY_TABLE_NAME)
+
+    vid_str = str(video_id)
+
+    if old_rating is None:
+        inc_doc: Dict[str, Any] = {"rating_counter": 1, "rating_total": new_rating}
     else:
-        total = 0
-        average = None
+        delta = new_rating - old_rating
+        inc_doc = {"rating_total": delta}
 
     try:
-        await videos_db_table.update_one(
-            filter={"videoid": str(video_id)},
-            update={
-                "$set": {
-                    "averageRating": average,
-                    "totalRatingsCount": total,
-                    "updatedAt": datetime.now(timezone.utc),
-                }
-            },
+        await summary_db_table.update_one(
+            filter={"videoid": vid_str},
+            update={"$inc": inc_doc},
+            upsert=True,
         )
     except DataAPIResponseException as exc:
-        # If the videos table schema does not include these columns (common
-        # when running against the default KillrVideo schema) Astra will
-        # reject the update with UNKNOWN_TABLE_COLUMNS.  That is not fatal –
-        # the API can still compute aggregates on-the-fly.
-        if "UNKNOWN_TABLE_COLUMNS" not in str(exc):
+        if "Update operation not supported" in str(
+            exc
+        ) or "unsupported operations" in str(exc):
+            existing = await summary_db_table.find_one(
+                filter={"videoid": vid_str}
+            )
+            counter = int(existing.get("rating_counter", 0)) if existing else 0
+            total = int(existing.get("rating_total", 0)) if existing else 0
+            if old_rating is None:
+                counter += 1
+                total += new_rating
+            else:
+                total += new_rating - old_rating
+            await summary_db_table.update_one(
+                filter={"videoid": vid_str},
+                update={"$set": {"rating_counter": counter, "rating_total": total}},
+                upsert=True,
+            )
+        else:
             raise
-        # Otherwise silently ignore so the rating operation succeeds.
 
 
 async def rate_video(
@@ -112,6 +127,16 @@ async def rate_video(
             createdAt=created_at,
             updatedAt=now,
         )
+        # Track in user_activity (never fail the rating operation)
+        try:
+            await record_user_activity(
+                userid=current_user.userid,
+                activity_type="rate",
+            )
+        except Exception:
+            logger.debug(
+                "user_activity insert failed for rate; ignoring", exc_info=True
+            )
     else:
         rating_obj = Rating(
             videoId=video_id,
@@ -127,10 +152,23 @@ async def rate_video(
             "rating_date": now,
         }
         await db_table.insert_one(document=insert_doc)
+        # Track in user_activity (never fail the rating operation)
+        try:
+            await record_user_activity(
+                userid=current_user.userid,
+                activity_type="rate",
+            )
+        except Exception:
+            logger.debug(
+                "user_activity insert failed for rate; ignoring", exc_info=True
+            )
 
-    # update aggregate
+    # update aggregate counters on the summary table
+    old_rating_value: int | None = None
+    if existing_doc:
+        old_rating_value = int(existing_doc["rating"])
     await _update_video_aggregate_rating(
-        video_id, db_table, await get_table(video_service.VIDEOS_TABLE_NAME)
+        video_id, new_rating=request.rating, old_rating=old_rating_value
     )
     return rating_obj
 
@@ -144,19 +182,35 @@ async def get_video_ratings_summary(
     video_id: VideoID,
     current_user_id: UUID | None = None,
     ratings_db_table: Optional[AstraDBCollection] = None,
+    summary_db_table: Optional[AstraDBCollection] = None,
 ) -> AggregateRatingResponse:
     """Return aggregated rating info for a video and optionally the caller's rating."""
 
-    # Fetch video to access pre-computed aggregates
+    # 404 check – make sure the video exists
     target_video = await video_service.get_video_by_id(video_id)
     if target_video is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Video not found"
         )
 
-    avg = target_video.averageRating
-    total = target_video.totalRatingsCount
+    # Read counters from the video_ratings summary table
+    if summary_db_table is None:
+        summary_db_table = await get_table(RATINGS_SUMMARY_TABLE_NAME)
 
+    summary_doc = await summary_db_table.find_one(
+        filter={"videoid": str(video_id)}
+    )
+
+    if summary_doc:
+        rating_counter = int(summary_doc.get("rating_counter", 0))
+        rating_total = int(summary_doc.get("rating_total", 0))
+        avg = round(rating_total / rating_counter, 2) if rating_counter > 0 else None
+        total = rating_counter
+    else:
+        avg = None
+        total = 0
+
+    # Look up current user's individual rating
     user_rating_value: RatingValue | None = None
     if current_user_id is not None:
         if ratings_db_table is None:

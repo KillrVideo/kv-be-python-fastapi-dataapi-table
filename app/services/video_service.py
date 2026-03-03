@@ -88,10 +88,6 @@ logger.info(
     logging.getLogger().getEffectiveLevel(),
 )
 
-# Flag to track if we've logged the view tracking limitation warning
-_logged_views_disabled = False
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -383,84 +379,60 @@ async def update_video_details(
 
 async def record_video_view(
     video_id: VideoID,
+    viewer_user_id: Optional[UUID] = None,
     db_table: Optional[AstraDBCollection] = None,
 ) -> None:
     """Increment the view counter stored directly in the *videos* table.
 
-    NOTE: View tracking is currently disabled. The 'views' column exists in the
-    CQL schema but is not yet exposed via the Astra DB Table API. This function
-    will gracefully no-op until API support is added.
-
-    The dedicated ``video_playback_stats`` counter table is no longer updated –
-    we instead mutate the new ``views`` bigint column in the primary table so
-    the entire workflow remains Data-API-only.
+    The Astra DB Table API does not support ``$inc``, so we use a read-modify-write
+    cycle: fetch the current ``views`` value and write back with ``$set``.
     """
 
     if db_table is None:
         db_table = await get_table(VIDEOS_TABLE_NAME)
 
-    try:
-        # Fast path – $inc is accepted on normal bigint columns
-        await db_table.update_one(
-            filter={"videoid": _uuid_for_db(video_id, db_table)},
-            update={"$inc": {"views": 1}},
-            upsert=True,
-        )
-    except DataAPIResponseException as exc:
-        global _logged_views_disabled
-        error_str = str(exc)
-
-        # Check if this is the known Table API limitation where the 'views' column
-        # exists in CQL schema but isn't exposed via the Table API yet
-        if (
-            "UNKNOWN_TABLE_COLUMNS" in error_str
-            or "UNSUPPORTED_UPDATE_OPERATIONS" in error_str
-        ):
-            # Log warning once per process lifecycle to avoid log spam
-            if not _logged_views_disabled:
-                logger.warning(
-                    "View tracking is currently disabled. The 'views' column exists in "
-                    "the CQL schema (docs/schema-astra.cql:95) but is not yet exposed "
-                    "via the Astra DB Table API. Views will not be tracked until API "
-                    "support is added. Error codes: UNKNOWN_TABLE_COLUMNS / "
-                    "UNSUPPORTED_UPDATE_OPERATIONS_FOR_TABLE"
-                )
-                _logged_views_disabled = True
-            return  # Gracefully no-op without breaking the API contract
-
-        # Some deployments (Astra *tables*) currently reject $inc on bigint –
-        # fall back to a manual read-modify-write cycle.
-        if (
-            "Update operation not supported" in error_str
-            or "unsupported operations" in error_str
-        ):
-            current = (
-                await db_table.find_one(
-                    filter={"videoid": _uuid_for_db(video_id, db_table)}
-                )
-                or {}
-            )
-            new_count = int(current.get("views", 0)) + 1
-            await db_table.update_one(
-                filter={"videoid": _uuid_for_db(video_id, db_table)},
-                update={"$set": {"views": new_count}},
-                upsert=True,
-            )
-        else:
-            raise
-
-    # Log individual view event in the time-series activity table (unchanged)
-    activity_table = await get_table(VIDEO_ACTIVITY_TABLE_NAME)
-    now_utc = datetime.now(timezone.utc)
-    day_partition = now_utc.strftime("%Y-%m-%d")  # Cassandra date literal format
-
-    await activity_table.insert_one(
-        {
-            "videoid": _uuid_for_db(video_id, db_table),
-            "day": day_partition,
-            "watch_time": str(uuid1()),  # time-based UUID for clustering order
-        }
+    # The Astra DB Table API does not support $inc. Use read-modify-write with $set.
+    current = (
+        await db_table.find_one(filter={"videoid": _uuid_for_db(video_id, db_table)})
+        or {}
     )
+    new_count = int(current.get("views", 0)) + 1
+    await db_table.update_one(
+        filter={"videoid": _uuid_for_db(video_id, db_table)},
+        update={"$set": {"views": new_count}},
+        upsert=True,
+    )
+
+    from app.services.user_activity_service import (
+        record_user_activity,
+        ANONYMOUS_USER_ID,
+    )
+
+    # Log individual view event in the time-series activity table (non-critical)
+    try:
+        activity_table = await get_table(VIDEO_ACTIVITY_TABLE_NAME)
+        now_utc = datetime.now(timezone.utc)
+        day_partition = now_utc.strftime("%Y-%m-%d")  # Cassandra date literal format
+
+        await activity_table.insert_one(
+            {
+                "videoid": _uuid_for_db(video_id, db_table),
+                "day": day_partition,
+                "watch_time": str(uuid1()),  # time-based UUID for clustering order
+            }
+        )
+    except Exception:
+        logger.warning("video_activity insert failed for view; ignoring", exc_info=True)
+
+    # Track in user_activity (never fail the view operation)
+    try:
+        effective_user_id = viewer_user_id if viewer_user_id else ANONYMOUS_USER_ID
+        await record_user_activity(
+            userid=effective_user_id,
+            activity_type="view",
+        )
+    except Exception:
+        logger.warning("user_activity insert failed for view; ignoring", exc_info=True)
 
 
 async def list_videos_with_query(
@@ -507,19 +479,23 @@ async def list_videos_with_query(
         span.set_attribute("page", page)
         span.set_attribute("page_size", page_size)
 
-        cursor = db_table.find(
-            filter=query_filter, skip=skip, limit=page_size, sort=sort_options
-        )
+        from app.utils.db_helpers import safe_count, suppress_astrapy_warnings
 
-        docs: List[Dict[str, Any]] = []
-        if hasattr(cursor, "to_list"):
-            docs = await cursor.to_list()
-        else:  # Stub collection path
-            docs = cursor  # type: ignore[assignment]
+        with suppress_astrapy_warnings(
+            "ZERO_FILTER_OPERATIONS",
+            "IN_MEMORY_SORTING",
+        ):
+            cursor = db_table.find(
+                filter=query_filter, skip=skip, limit=page_size, sort=sort_options
+            )
+
+            docs: List[Dict[str, Any]] = []
+            if hasattr(cursor, "to_list"):
+                docs = await cursor.to_list()
+            else:  # Stub collection path
+                docs = cursor  # type: ignore[assignment]
 
         # Use helper that gracefully degrades on tables
-        from app.utils.db_helpers import safe_count
-
         total_items = await safe_count(
             db_table,
             query_filter=query_filter,

@@ -1,6 +1,6 @@
 .env
 .python-version
-.DS_Store 
+.DS_Store
 
 # Python
 __pycache__/
@@ -14,6 +14,11 @@ __pycache__/
 *.pyzwz
 
 *.log
+
+# Data files (source of truth is in killrvideo-data project)
+data/
+logs/
+dsbulk.conf
 
 certs/
 
